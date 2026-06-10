@@ -1,0 +1,37 @@
+name: Daily Job Alert
+
+on:
+  schedule:
+    # 13:00 UTC = 8:00 AM Chicago (CDT). Adjust as needed.
+    - cron: "0 13 * * *"
+  workflow_dispatch: {}   # lets you trigger manually from the Actions tab
+
+permissions:
+  contents: write          # needed to commit seen_jobs.json back
+
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: Run job alert
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          TO_ADDRESS: ${{ secrets.TO_ADDRESS }}
+        run: python job_alert.py
+
+      - name: Persist seen jobs
+        run: |
+          git config user.name "job-alert-bot"
+          git config user.email "actions@github.com"
+          git add seen_jobs.json
+          git diff --cached --quiet || git commit -m "Update seen jobs [skip ci]"
+          git push
