@@ -1,9 +1,10 @@
-name: Daily Job Alert
+name: Job Alert (every 2 hours)
 
 on:
   schedule:
-    # 13:00 UTC = 8:00 AM Chicago (CDT). Adjust as needed.
-    - cron: "23 14 * * *"
+    # Runs every 2 hours at :07 past (UTC). Offset from :00 to avoid GitHub's
+    # busiest scheduling slot, which reduces delayed/dropped runs.
+    - cron: "7 */2 * * *"
   workflow_dispatch: {}   # lets you trigger manually from the Actions tab
 
 permissions:
