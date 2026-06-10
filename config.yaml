@@ -122,9 +122,9 @@ companies:
 # ------------------------------------------------------------
 # A job is included if its title matches at least one
 # role keyword AND does not match any exclude keyword.
-# If require_new_grad_signal is true, the title (or location/team
-# text) must ALSO contain a new-grad signal — set false to see
-# all matching roles regardless of level wording.
+# If require_new_grad_signal is true, the title must ALSO contain a
+# new-grad signal — set false to see all matching roles regardless of
+# level wording.
 
 role_keywords:
     - software engineer

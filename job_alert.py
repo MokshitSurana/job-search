@@ -1,5 +1,5 @@
 """
-Daily job alert script.
+Job alert script.
 
 Fetches postings from Greenhouse / Lever / Ashby public job-board APIs,
 filters for target roles, dedupes against previously-seen jobs, and emails
@@ -22,6 +22,7 @@ import os
 import re
 import smtplib
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -29,12 +30,37 @@ from pathlib import Path
 
 import requests
 import yaml
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.yaml"
 STATE_PATH = BASE_DIR / "seen_jobs.json"
 TIMEOUT = 20
+MAX_WORKERS = 10           # concurrent board fetches
+SEEN_RETENTION_DAYS = 90   # drop seen IDs not re-observed within this window
 HEADERS = {"User-Agent": "job-alert-script/1.0"}
+
+
+def _make_session():
+    """Shared session with connection pooling + automatic retry/backoff on
+    transient failures (connection errors and 429/5xx responses)."""
+    s = requests.Session()
+    s.headers.update(HEADERS)
+    retry = Retry(
+        total=3,
+        backoff_factor=0.5,                       # 0.5s, 1s, 2s between tries
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=("GET",),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_maxsize=MAX_WORKERS)
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
+    return s
+
+
+SESSION = _make_session()
 
 US_HINTS = re.compile(
     r"\b(united states|usa|u\.s\.|remote.{0,10}us|us.{0,10}remote|"
@@ -84,7 +110,7 @@ LEVEL_RE = re.compile(
 
 def fetch_greenhouse(slug):
     url = f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs"
-    r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+    r = SESSION.get(url, timeout=TIMEOUT)
     r.raise_for_status()
     jobs = []
     for j in r.json().get("jobs", []):
@@ -101,7 +127,7 @@ def fetch_greenhouse(slug):
 
 def fetch_lever(slug):
     url = f"https://api.lever.co/v0/postings/{slug}?mode=json"
-    r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+    r = SESSION.get(url, timeout=TIMEOUT)
     r.raise_for_status()
     jobs = []
     for j in r.json():
@@ -119,7 +145,7 @@ def fetch_lever(slug):
 
 def fetch_ashby(slug):
     url = f"https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=false"
-    r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+    r = SESSION.get(url, timeout=TIMEOUT)
     r.raise_for_status()
     jobs = []
     for j in r.json().get("jobs", []):
@@ -147,7 +173,7 @@ def fetch_simplifyjobs(cfg):
     sj = cfg.get("simplifyjobs") or {}
     if not sj.get("enabled"):
         return []
-    r = requests.get(SIMPLIFY_URL, headers=HEADERS, timeout=60)
+    r = SESSION.get(SIMPLIFY_URL, timeout=60)
     r.raise_for_status()
     listings = r.json()
 
@@ -233,13 +259,24 @@ def is_new_grad_flavored(job, cfg):
 # ----------------------------------------------------------------------
 
 def load_seen():
-    if STATE_PATH.exists():
-        return set(json.loads(STATE_PATH.read_text()))
-    return set()
+    """Return {job_id: last_seen_unix_ts}. Tolerates the legacy flat-list
+    format by stamping those IDs with the current time on first read."""
+    if not STATE_PATH.exists():
+        return {}
+    data = json.loads(STATE_PATH.read_text())
+    if isinstance(data, list):  # legacy format — migrate
+        now = datetime.now(timezone.utc).timestamp()
+        return {jid: now for jid in data}
+    return data
 
 
 def save_seen(seen):
-    STATE_PATH.write_text(json.dumps(sorted(seen), indent=0))
+    """Persist state, pruning IDs not re-observed within the retention
+    window so the file (and its git history) doesn't grow unbounded."""
+    now = datetime.now(timezone.utc).timestamp()
+    cutoff = now - SEEN_RETENTION_DAYS * 86400
+    pruned = {jid: ts for jid, ts in seen.items() if ts >= cutoff}
+    STATE_PATH.write_text(json.dumps(pruned, indent=0, sort_keys=True))
 
 
 # ----------------------------------------------------------------------
@@ -309,11 +346,18 @@ def main():
     first_run = not STATE_PATH.exists()
 
     all_matched, errors = [], []
-    for ats, slugs in cfg["companies"].items():
-        fetcher = FETCHERS[ats]
-        for slug in slugs:
+
+    # Fetch all boards concurrently — one slow/hanging host no longer blocks
+    # the rest, and ~90 sequential requests collapse to a few seconds.
+    tasks = [(ats, slug) for ats, slugs in cfg["companies"].items()
+             for slug in slugs]
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        futures = {pool.submit(FETCHERS[ats], slug): (ats, slug)
+                   for ats, slug in tasks}
+        for fut in as_completed(futures):
+            ats, slug = futures[fut]
             try:
-                jobs = fetcher(slug)
+                jobs = fut.result()
             except Exception as e:
                 errors.append(f"{ats}/{slug}: {e}")
                 continue
@@ -359,9 +403,13 @@ def main():
             send_email(new_jobs)
             print(f"Emailed {len(new_jobs)} new job(s).")
     else:
-        print("No new jobs today.")
+        print("No new jobs.")
 
-    seen.update(j["id"] for j in all_matched)
+    # Refresh the timestamp on every currently-matched job so still-live
+    # postings never age out of the retention window.
+    now = datetime.now(timezone.utc).timestamp()
+    for j in all_matched:
+        seen[j["id"]] = now
     save_seen(seen)
 
 
