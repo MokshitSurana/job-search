@@ -184,3 +184,6 @@ simplifyjobs:
         - AI/ML/Data
     max_age_days: 7 # only surface posts from the last N days
     skip_citizenship_required: true # drop "U.S. Citizenship is Required" roles
+    # Drop roles the feed explicitly marks "Does Not Offer Sponsorship".
+    # Roles offering sponsorship get a ✅ badge + float to the top of the email.
+    skip_no_sponsorship: true

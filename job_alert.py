@@ -184,6 +184,7 @@ def fetch_simplifyjobs(cfg):
     max_age = sj.get("max_age_days", 7) * 86400
     now = datetime.now(timezone.utc).timestamp()
     skip_citizen = sj.get("skip_citizenship_required", True)
+    skip_no_sponsor = sj.get("skip_no_sponsorship", False)
 
     excludes = [k.lower().strip('" ') for k in cfg["exclude_keywords"]]
     # Feed entries are sometimes miscategorized (statisticians, attendants,
@@ -200,7 +201,10 @@ def fetch_simplifyjobs(cfg):
             continue
         if now - j.get("date_posted", 0) > max_age:
             continue
-        if skip_citizen and j.get("sponsorship") == "U.S. Citizenship is Required":
+        sponsorship = j.get("sponsorship") or ""
+        if skip_citizen and sponsorship == "U.S. Citizenship is Required":
+            continue
+        if skip_no_sponsor and sponsorship == "Does Not Offer Sponsorship":
             continue
         title = j.get("title", "")
         if not tech_re.search(title):
@@ -220,6 +224,7 @@ def fetch_simplifyjobs(cfg):
             "location": location,
             "url": j.get("url", ""),
             "ats": "simplifyjobs",
+            "sponsorship": sponsorship,
         })
     return jobs
 
@@ -296,11 +301,16 @@ def build_html(new_jobs):
             f"{html.escape(company.title())}</h3>"
         )
         for j in by_company[company]:
+            badge = ""
+            if j.get("sponsorship") == "Offers Sponsorship":
+                badge = ("<span style='font-size:11px;color:#0a7d33;"
+                         "background:#e6f4ea;border-radius:3px;padding:1px 6px;"
+                         "margin-left:8px;'>✅ Sponsors</span>")
             rows.append(
                 "<div style='margin:4px 0 10px;'>"
                 f"<a href='{html.escape(j['url'])}' "
                 "style='font-size:15px;color:#1155cc;text-decoration:none;'>"
-                f"{html.escape(j['title'])}</a><br>"
+                f"{html.escape(j['title'])}</a>{badge}<br>"
                 f"<span style='font-size:13px;color:#666;'>"
                 f"{html.escape(j['location'] or 'Location unspecified')}</span>"
                 "</div>"
@@ -380,7 +390,10 @@ def main():
     all_matched = deduped
 
     new_jobs = [j for j in all_matched if j["id"] not in seen]
-    new_jobs.sort(key=lambda j: (not is_new_grad_flavored(j, cfg),
+    # Float roles that explicitly offer sponsorship to the very top, then
+    # likely new-grad roles, then alphabetical.
+    new_jobs.sort(key=lambda j: (j.get("sponsorship") != "Offers Sponsorship",
+                                 not is_new_grad_flavored(j, cfg),
                                  j["company"], j["title"]))
 
     print(f"Fetched & matched: {len(all_matched)} | new: {len(new_jobs)}")
