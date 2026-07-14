@@ -118,7 +118,7 @@ def fetch_greenhouse(slug):
             "id": f"gh-{slug}-{j['id']}",
             "company": slug,
             "title": j.get("title", ""),
-            "location": (j.get("location") or {}).get("name", ""),
+            "location": (j.get("location") or {}).get("name") or "",
             "url": j.get("absolute_url", ""),
             "ats": "greenhouse",
         })
@@ -234,8 +234,8 @@ def fetch_simplifyjobs(cfg):
 # ----------------------------------------------------------------------
 
 def matches(job, cfg):
-    title = job["title"].lower()
-    location = job["location"].lower()
+    title = (job.get("title") or "").lower()
+    location = (job.get("location") or "").lower()
 
     if not any(k.lower() in title for k in cfg["role_keywords"]):
         return False
@@ -255,7 +255,7 @@ def matches(job, cfg):
 
 def is_new_grad_flavored(job, cfg):
     """Used only for sorting: float likely new-grad roles to the top."""
-    title = job["title"].lower()
+    title = (job.get("title") or "").lower()
     return any(k.lower() in title for k in cfg["new_grad_keywords"])
 
 
